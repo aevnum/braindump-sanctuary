@@ -1,0 +1,105 @@
+# requirements.txt
+# Core ML/NLP
+sentence-transformers==2.2.2
+scikit-learn==1.3.2
+hdbscan==0.8.33
+umap-learn==0.5.5
+
+# LLM & Agents
+langgraph==0.2.0
+langchain==0.2.0
+langchain-anthropic==0.1.15
+langchain-core==0.2.0
+
+# Visualization & UI
+streamlit==1.28.0
+plotly==5.18.0
+
+# Data
+pandas==2.1.3
+numpy==1.24.3
+
+# Optional: For real web search (uncomment if using)
+# tavily-python==0.3.0
+# google-search-results==2.4.2
+
+# ============================================
+# SETUP INSTRUCTIONS
+# ============================================
+
+# 1. Create project structure:
+mkdir braindump_sanctuary
+cd braindump_sanctuary
+
+# 2. Create virtual environment:
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# 3. Install dependencies:
+pip install -r requirements.txt
+
+# 4. Set API key:
+export ANTHROPIC_API_KEY='your-key-here'
+# On Windows: set ANTHROPIC_API_KEY=your-key-here
+
+# 5. Create files:
+# - Save Day 1 code as: braindump_core.py
+# - Save Day 2 Streamlit code as: app.py  
+# - Save agents code as: agents.py
+
+# 6. Run the app:
+streamlit run app.py
+
+# ============================================
+# QUICK START (if you want to test agents separately)
+# ============================================
+
+# Test question generation:
+# python -c "from agents import QuestionAgent; agent = QuestionAgent(); print(agent.generate_questions('Why do we dream?'))"
+
+# Test perspective analysis:
+# python -c "from agents import PerspectiveAgent; agent = PerspectiveAgent(); print(agent.analyze('Are LLMs truly intelligent?'))"
+
+# ============================================
+# COST OPTIMIZATION TIPS
+# ============================================
+
+# 1. Use Claude Haiku (cheapest):
+#    - $0.25/MTok input, $1.25/MTok output
+#    - Perfect for demos
+#    - ~100 queries = $1-2
+
+# 2. Cache embeddings in DB:
+#    - Already implemented in braindump_core.py
+#    - Avoids re-computing
+
+# 3. Batch operations:
+#    - Don't call LLM for every dump
+#    - Pre-compute impressive examples
+
+# 4. Mock search for demo:
+#    - Real Tavily API: $0.005/search
+#    - Use mock results (already in code)
+#    - Swap in real search after demo works
+
+# ============================================
+# TROUBLESHOOTING
+# ============================================
+
+# If sentence-transformers fails on Apple Silicon:
+pip install --no-deps sentence-transformers
+pip install torch torchvision torchaudio
+pip install transformers tokenizers
+
+# If HDBSCAN fails to install:
+pip install --upgrade pip setuptools wheel
+pip install hdbscan --no-cache-dir
+
+# If streamlit shows "externally managed environment" error:
+python -m venv venv --system-site-packages
+# Then reinstall
+
+# If API key not recognized:
+# Add to ~/.bashrc or ~/.zshrc:
+echo 'export ANTHROPIC_API_KEY="your-key"' >> ~/.bashrc
+source ~/.bashrc
