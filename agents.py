@@ -54,7 +54,7 @@ class QuestionAgent:
     """
     Generates Socratic questions to expand on a vague idea.
     """
-    def __init__(self, model="gemini-1.5-flash"):
+    def __init__(self, model="gemini-2.5-flash"):
         self.model = model
         self.system_prompt = """
 You are a Socratic tutor. A user has a vague brain dump idea. 
@@ -126,7 +126,7 @@ class PerspectiveAgent:
     """
     Analyzes a controversial topic from multiple angles.
     """
-    def __init__(self, model="gemini-1.5-flash"):
+    def __init__(self, model="gemini-2.5-flash"):
         self.model = model
         self.system_prompt = """
 You are a multi-perspective analyst. A user has a topic,
