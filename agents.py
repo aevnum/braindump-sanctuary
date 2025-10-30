@@ -18,32 +18,34 @@ in a more complex LangGraph orchestration graph.
 import os
 import json
 
-# We'll use OpenAI as the LLM. You can swap this with Anthropic
-# if you prefer, but you'll need to adjust the API call.
-from openai import OpenAI
+# We'll use Google Gemini as the LLM
+import google.generativeai as genai
+
+from dotenv import load_dotenv
 
 # --- API Key Configuration ---
-# On Kaggle, add your "OPENAI_API_KEY" to the "Secrets" addon.
-# os.environ.get() is the standard way to access it.
+# Add your "GOOGLE_API_KEY" to Kaggle secrets or environment variables.
+# Get your free key from: https://aistudio.google.com/app/apikey
 try:
     # Try to get from Kaggle secrets
     from kaggle_secrets import UserSecretsClient
     secrets = UserSecretsClient()
-    API_KEY = secrets.get_secret("OPENAI_API_KEY")
+    API_KEY = secrets.get_secret("GOOGLE_API_KEY")
 except ImportError:
+    load_dotenv()
     # Fallback for local dev or other environments
-    API_KEY = os.environ.get("OPENAI_API_KEY")
+    API_KEY = os.getenv("GOOGLE_API_KEY")
 except Exception:
     API_KEY = None
 
 if not API_KEY:
-    print("WARNING: OPENAI_API_KEY not found. Please set it in your Kaggle secrets or environment.")
+    print("WARNING: GOOGLE_API_KEY not found. Please set it in your Kaggle secrets or environment.")
+    print("Get your free API key from: https://aistudio.google.com/app/apikey")
     # Set a placeholder to avoid crashing, but calls will fail.
-    API_KEY = "YOUR_API_KEY_HERE" 
-
-# Initialize the client globally or within each class
-# Global is fine for this demo
-client = OpenAI(api_key=API_KEY)
+    API_KEY = "YOUR_API_KEY_HERE"
+else:
+    # Configure Gemini with the API key
+    genai.configure(api_key=API_KEY)
 
 
 # ============== 1. Socratic Question Agent ==============
@@ -52,7 +54,7 @@ class QuestionAgent:
     """
     Generates Socratic questions to expand on a vague idea.
     """
-    def __init__(self, model="gpt-4o-mini"):
+    def __init__(self, model="gemini-1.5-flash"):
         self.model = model
         self.system_prompt = """
 You are a Socratic tutor. A user has a vague brain dump idea. 
@@ -78,19 +80,24 @@ Your Response:
     def generate_questions(self, idea: str) -> list[str]:
         """Generates Socratic questions for a given idea."""
         if API_KEY == "YOUR_API_KEY_HERE":
-             return ["Error: OPENAI_API_KEY is not set.", "Please add it to your Kaggle secrets."]
+             return ["Error: GOOGLE_API_KEY is not set.", "Please add it to your environment or Kaggle secrets."]
 
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                # Use JSON mode for reliable output
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": f"User Idea: \"{idea}\""}
-                ]
+            # Create Gemini model
+            model = genai.GenerativeModel(
+                model_name=self.model,
+                generation_config={
+                    "temperature": 0.7,
+                    "response_mime_type": "application/json"
+                }
             )
-            questions_json_string = response.choices[0].message.content
+            
+            # Combine system prompt and user input
+            prompt = f"{self.system_prompt}\n\nUser Idea: \"{idea}\""
+            
+            # Generate response
+            response = model.generate_content(prompt)
+            questions_json_string = response.text
             questions = json.loads(questions_json_string)
             
             # The LLM might return a dict {"questions": [...]}, or just [...]
@@ -119,7 +126,7 @@ class PerspectiveAgent:
     """
     Analyzes a controversial topic from multiple angles.
     """
-    def __init__(self, model="gpt-4o"): # Use a more powerful model
+    def __init__(self, model="gemini-1.5-flash"):
         self.model = model
         self.system_prompt = """
 You are a multi-perspective analyst. A user has a topic,
@@ -138,21 +145,27 @@ Each value should be a short paragraph (2-4 sentences).
         """Analyzes a topic from multiple perspectives."""
         if API_KEY == "YOUR_API_KEY_HERE":
             return {
-                "skeptical": "Error: OPENAI_API_KEY not set.",
-                "optimistic": "Please add your API key to Kaggle secrets.",
+                "skeptical": "Error: GOOGLE_API_KEY not set.",
+                "optimistic": "Please add your API key to environment or Kaggle secrets.",
                 "nuanced": "The agent cannot run without an API key."
             }
 
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": f"Topic: \"{topic}\""}
-                ]
+            # Create Gemini model
+            model = genai.GenerativeModel(
+                model_name=self.model,
+                generation_config={
+                    "temperature": 0.7,
+                    "response_mime_type": "application/json"
+                }
             )
-            perspectives_json_string = response.choices[0].message.content
+            
+            # Combine system prompt and user input
+            prompt = f"{self.system_prompt}\n\nTopic: \"{topic}\""
+            
+            # Generate response
+            response = model.generate_content(prompt)
+            perspectives_json_string = response.text
             perspectives = json.loads(perspectives_json_string)
             
             # Ensure the keys are always present to prevent errors in app.py
