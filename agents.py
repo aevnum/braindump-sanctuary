@@ -23,6 +23,9 @@ import google.generativeai as genai
 
 from dotenv import load_dotenv
 
+# Tavily for web search
+from tavily import TavilyClient
+
 # --- API Key Configuration ---
 # Add your "GOOGLE_API_KEY" to Kaggle secrets or environment variables.
 # Get your free key from: https://aistudio.google.com/app/apikey
@@ -39,13 +42,20 @@ except Exception:
     API_KEY = None
 
 if not API_KEY:
-    print("WARNING: GOOGLE_API_KEY not found. Please set it in your Kaggle secrets or environment.")
+    print("WARNING: GOOGLE_API_KEY not found. Please set it in your environment or Kaggle secrets.")
     print("Get your free API key from: https://aistudio.google.com/app/apikey")
     # Set a placeholder to avoid crashing, but calls will fail.
     API_KEY = "YOUR_API_KEY_HERE"
 else:
     # Configure Gemini with the API key
     genai.configure(api_key=API_KEY)
+
+# --- Tavily API Key Configuration ---
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+if not TAVILY_API_KEY:
+    print("WARNING: TAVILY_API_KEY not found. SearchAgent will use mock data.")
+    print("Get your API key from: https://app.tavily.com")
+    TAVILY_API_KEY = None
 
 
 # ============== 1. Socratic Question Agent ==============
@@ -125,9 +135,11 @@ Your Response:
 class PerspectiveAgent:
     """
     Analyzes a controversial topic from multiple angles.
+    Can optionally use web search results for context.
     """
-    def __init__(self, model="gemini-2.5-flash"):
+    def __init__(self, model="gemini-2.5-flash", search_agent=None):
         self.model = model
+        self.search_agent = search_agent
         self.system_prompt = """
 You are a multi-perspective analyst. A user has a topic,
 which may be controversial or nuanced.
@@ -142,7 +154,7 @@ Each value should be a short paragraph (2-4 sentences).
 """
 
     def analyze(self, topic: str) -> dict[str, str]:
-        """Analyzes a topic from multiple perspectives."""
+        """Analyzes a topic from multiple perspectives with optional web context."""
         if API_KEY == "YOUR_API_KEY_HERE":
             return {
                 "skeptical": "Error: GOOGLE_API_KEY not set.",
@@ -151,6 +163,18 @@ Each value should be a short paragraph (2-4 sentences).
             }
 
         try:
+            # Get web context if search_agent is available
+            web_context = ""
+            sources = []
+            if self.search_agent and self.search_agent.use_real_search:
+                print(f"🌐 Fetching web context for multi-perspective analysis...")
+                articles = self.search_agent.get_relevant_articles(topic)
+                if articles:
+                    web_context = "\n\nRelevant Web Context:\n"
+                    for i, article in enumerate(articles, 1):
+                        web_context += f"{i}. {article['title']}: {article['snippet']}\n"
+                        sources.append(article)
+            
             # Create Gemini model
             model = genai.GenerativeModel(
                 model_name=self.model,
@@ -160,8 +184,8 @@ Each value should be a short paragraph (2-4 sentences).
                 }
             )
             
-            # Combine system prompt and user input
-            prompt = f"{self.system_prompt}\n\nTopic: \"{topic}\""
+            # Combine system prompt and user input with optional web context
+            prompt = f"{self.system_prompt}\n\nTopic: \"{topic}\"{web_context}"
             
             # Generate response
             response = model.generate_content(prompt)
@@ -172,6 +196,10 @@ Each value should be a short paragraph (2-4 sentences).
             perspectives.setdefault('skeptical', 'No skeptical view generated.')
             perspectives.setdefault('optimistic', 'No optimistic view generated.')
             perspectives.setdefault('nuanced', 'No nuanced view generated.')
+            
+            # Add sources if available
+            if sources:
+                perspectives['sources'] = sources
             
             return perspectives
             
@@ -184,28 +212,111 @@ Each value should be a short paragraph (2-4 sentences).
             }
 
 
-# ============== 3. Web Search Agent (MOCKED) ==============
+# ============== 3. Web Search Agent ==============
 
 class SearchAgent:
     """
-    MOCK AGENT: Simulates web search and synthesis.
-    This fulfills the "SearchAgent" requirement for Day 2
-    without needing a live search API (like Tavily or SerpAPI).
+    Real web search using Tavily API + Gemini synthesis.
+    Falls back to mock data if API key is missing.
     """
     def __init__(self):
-        # In a real implementation, this would initialize
-        # a Tavily or SerpAPI client.
-        # e.g., self.tavily = TavilyClient(api_key=...)
-        print("Initialized MOCK SearchAgent.")
-        pass
+        self.use_real_search = bool(TAVILY_API_KEY)
+        if self.use_real_search:
+            self.tavily = TavilyClient(api_key=TAVILY_API_KEY)
+            self.llm = genai.GenerativeModel("gemini-2.5-flash")
+            print("✅ Initialized SearchAgent with Tavily API")
+        else:
+            print("⚠️ Initialized MOCK SearchAgent (no Tavily key)")
     
     def deep_dive(self, topic: str) -> dict:
         """
-        MOCK FUNCTION: Simulates a web search and synthesis.
-        
-        Returns a hard-coded summary and sources.
+        Searches web using Tavily, then synthesizes with Gemini.
+        Falls back to mock if no API key.
         """
-        print(f"MOCK SEARCH: Deep dive for '{topic}'")
+        if not self.use_real_search:
+            return self._mock_search(topic)
+        
+        try:
+            # Step 1: Search with Tavily
+            print(f"🔍 Searching Tavily for: {topic}")
+            search_results = self.tavily.search(
+                query=topic,
+                max_results=5,
+                search_depth="advanced"
+            )
+            
+            # Step 2: Extract sources
+            sources = []
+            context = ""
+            for result in search_results.get('results', []):
+                sources.append({
+                    'title': result.get('title', 'Untitled'),
+                    'url': result.get('url', '#'),
+                    'snippet': result.get('content', '')[:200] + "..."
+                })
+                context += f"\n\n{result.get('content', '')}"
+            
+            # Step 3: Synthesize with Gemini
+            print(f"🤖 Synthesizing with Gemini...")
+            synthesis_prompt = f"""You are a research synthesizer. Based on the following web search results about "{topic}", 
+write a comprehensive 3-4 paragraph summary that:
+1. Answers the core question
+2. Highlights key findings and debates
+3. Cites different viewpoints if applicable
+
+Web Search Results:
+{context[:4000]}
+
+Provide ONLY the summary text, no preamble."""
+
+            response = self.llm.generate_content(synthesis_prompt)
+            summary = response.text
+            
+            return {
+                "summary": summary,
+                "sources": sources
+            }
+            
+        except Exception as e:
+            print(f"❌ Tavily search failed: {e}")
+            return {
+                "summary": f"Search failed: {str(e)}. Please check your Tavily API key.",
+                "sources": []
+            }
+    
+    def get_relevant_articles(self, topic: str, max_results: int = 3) -> list[dict]:
+        """
+        Gets top articles for a topic (used by PerspectiveAgent).
+        Returns: [{'title': str, 'url': str, 'snippet': str}, ...]
+        """
+        if not self.use_real_search:
+            return []
+        
+        try:
+            print(f"📰 Fetching articles for: {topic}")
+            search_results = self.tavily.search(
+                query=topic,
+                max_results=max_results,
+                search_depth="basic"
+            )
+            
+            articles = []
+            for result in search_results.get('results', []):
+                articles.append({
+                    'title': result.get('title', 'Untitled'),
+                    'url': result.get('url', '#'),
+                    'snippet': result.get('content', '')[:300] + "..."
+                })
+            
+            return articles
+            
+        except Exception as e:
+            print(f"❌ Article fetch failed: {e}")
+            return []
+    
+    def _mock_search(self, topic: str) -> dict:
+        """Fallback mock implementation"""
+        print(f"🔍 MOCK SEARCH: Deep dive for '{topic}' (using hardcoded data)")
         
         # Simulate different responses for different topics
         if "dream" in topic.lower():
@@ -238,7 +349,6 @@ class SearchAgent:
                 ]
             }
         else:
-            # Generic fallback
             return {
                 "summary": (
                     f"This is a mock summary about '{topic}'. This agent successfully simulated a "
