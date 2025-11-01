@@ -201,20 +201,42 @@ def render_feed_card(dump_id, text, cluster_id, cluster_labels_map):
         
         st.divider()
         
-        # Summary from Feed Agent (uses Perplexity Sonar if available)
-        with st.spinner("🧠 Generating Sonar summary..."):
-            result = st.session_state.feed_agent.generate_summary(text)
+        # Check if we have cached feed data
+        cached_data = st.session_state.db.get_feed_cache(dump_id)
+        
+        if cached_data:
+            # Use cached summary and questions
             st.markdown("**Summary:**")
-            st.write(result['summary'])
+            st.write(cached_data['summary'])
+            questions = cached_data['questions']
+        else:
+            # Generate summary using Feed Agent
+            with st.spinner("🧠 Generating Sonar summary..."):
+                try:
+                    result = st.session_state.feed_agent.generate_summary(text)
+                    summary = result['summary']
+                    st.markdown("**Summary:**")
+                    st.write(summary)
+                    
+                    # Generate questions
+                    questions = st.session_state.question_agent.generate_questions(text)
+                    
+                    # Cache both the summary and questions
+                    st.session_state.db.save_feed_cache(dump_id, summary, questions)
+                except Exception as e:
+                    st.error(f"Error generating summary: {str(e)}")
+                    summary = "Unable to generate summary. Please try again."
+                    questions = []
         
         st.divider()
         
-        # Questions for Reflection from Question Agent
-        with st.spinner("Generating reflection questions..."):
-            questions = st.session_state.question_agent.generate_questions(text)
-            st.markdown("**Questions for Reflection:**")
+        # Display questions (either cached or just generated)
+        st.markdown("**Questions for Reflection:**")
+        if questions:
             for i, q in enumerate(questions, 1):
                 st.markdown(f"{i}. {q}")
+        else:
+            st.info("No questions available for this brain dump.")
 
 
 def render_home():
@@ -308,6 +330,25 @@ def render_home():
                                         st.session_state.db.save_cluster_label(cluster_id, label)
                                     else:
                                         cluster_labels_dict[cluster_id] = existing_labels[cluster_id]['label']
+                        
+                        # Generate and cache feed data for new/uncached dumps
+                        with st.spinner("Generating feed summaries and questions..."):
+                            for i, (dump_id, text, _, _) in enumerate(dumps):
+                                # Check if feed cache already exists
+                                if not st.session_state.db.get_feed_cache(dump_id):
+                                    try:
+                                        # Generate summary
+                                        summary_result = st.session_state.feed_agent.generate_summary(text)
+                                        summary = summary_result['summary']
+                                        
+                                        # Generate questions
+                                        questions = st.session_state.question_agent.generate_questions(text)
+                                        
+                                        # Cache both
+                                        st.session_state.db.save_feed_cache(dump_id, summary, questions)
+                                    except Exception as e:
+                                        print(f"Warning: Could not generate feed cache for {dump_id}: {e}")
+                                        # Continue without caching for this dump
                 else:
                     # Use existing embeddings and clusters
                     st.info("📦 Using cached embeddings and clusters")
@@ -432,17 +473,87 @@ def render_feed():
     if len(dumps) == 0:
         st.info("👋 No brain dumps yet. Add one using the sidebar to get started!")
     else:
-        # Get 5 most recent dumps (already sorted DESC by created_at in get_all_dumps)
-        recent_dumps = dumps[:5]
-        
         cluster_labels_map = st.session_state.db.get_all_cluster_labels()
         
-        st.markdown(f"Showing **{len(recent_dumps)}** most recent brain dumps")
+        # Search and filter section
+        col1, col2 = st.columns([4, 1])
+        
+        with col1:
+            search_query = st.text_input(
+                "🔍 Search brain dumps",
+                placeholder="Type to search...",
+                key="feed_search"
+            )
+        
+        # Initialize search mode state if not exists
+        if 'search_mode' not in st.session_state:
+            st.session_state.search_mode = False
+        if 'selected_dump_id' not in st.session_state:
+            st.session_state.selected_dump_id = None
+        
+        # Get filtered dumps based on search
+        if search_query.strip():
+            # Filter dumps by text matching (case-insensitive)
+            filtered_dumps = [
+                d for d in dumps 
+                if search_query.lower() in d[1].lower()
+            ]
+            
+            # Show autocomplete suggestions in a selectbox
+            if filtered_dumps:
+                st.write(f"**Found {len(filtered_dumps)} matching brain dump{'s' if len(filtered_dumps) != 1 else ''}:**")
+                
+                # Create a list of dump texts for selection
+                dump_options = [f"{d[1][:60]}..." if len(d[1]) > 60 else d[1] for d in filtered_dumps]
+                
+                selected_idx = st.selectbox(
+                    "Select a brain dump to view",
+                    range(len(filtered_dumps)),
+                    format_func=lambda i: dump_options[i],
+                    key="dump_selector"
+                )
+                
+                if selected_idx is not None:
+                    st.session_state.search_mode = True
+                    st.session_state.selected_dump_id = filtered_dumps[selected_idx][0]
+            else:
+                st.warning(f"No brain dumps found matching '{search_query}'")
+        else:
+            # No search query - show recent dumps
+            st.session_state.search_mode = False
+            st.session_state.selected_dump_id = None
+        
         st.divider()
         
-        for dump_id, text, cluster_id, created_at in recent_dumps:
-            render_feed_card(dump_id, text, cluster_id, cluster_labels_map)
-            st.markdown("")  # Spacing between cards
+        # Display selected dump or recent dumps
+        if st.session_state.search_mode and st.session_state.selected_dump_id:
+            # Show single selected dump with back button
+            col1, col2 = st.columns([4, 1])
+            
+            with col2:
+                if st.button("← Back to Feed", key="back_to_feed"):
+                    st.session_state.search_mode = False
+                    st.session_state.selected_dump_id = None
+                    st.rerun()
+            
+            # Find the selected dump
+            selected_dump = next(
+                (d for d in dumps if d[0] == st.session_state.selected_dump_id),
+                None
+            )
+            
+            if selected_dump:
+                dump_id, text, cluster_id, created_at = selected_dump
+                st.markdown("### Single Brain Dump View")
+                render_feed_card(dump_id, text, cluster_id, cluster_labels_map)
+        else:
+            # Show 5 most recent dumps (default view)
+            recent_dumps = dumps[:5]
+            st.markdown(f"Showing **{len(recent_dumps)}** most recent brain dumps")
+            
+            for dump_id, text, cluster_id, created_at in recent_dumps:
+                render_feed_card(dump_id, text, cluster_id, cluster_labels_map)
+                st.markdown("")  # Spacing between cards
 
 
 # ============== MAIN APP ==============

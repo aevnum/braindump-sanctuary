@@ -210,6 +210,46 @@ class BrainDumpDB:
             dump_id = result.single()["dump_id"]
             return dump_id
     
+    def save_feed_cache(self, dump_id, summary, questions):
+        """
+        Store cached feed data (summary and questions) for a dump.
+        
+        Args:
+            dump_id: ID of the dump
+            summary: Summary text from FeedAgent
+            questions: List of reflection questions
+        """
+        with self.driver.session() as session:
+            # Store as JSON strings for Neo4j compatibility
+            questions_json = json.dumps(questions) if isinstance(questions, list) else questions
+            
+            session.run("""
+                MATCH (d:Dump {id: $dump_id})
+                SET d.summary = $summary,
+                    d.questions = $questions,
+                    d.feed_cache_generated_at = datetime()
+            """, dump_id=dump_id, summary=summary, questions=questions_json)
+    
+    def get_feed_cache(self, dump_id):
+        """
+        Retrieve cached feed data for a dump.
+        Returns: {"summary": str, "questions": list} or None if not cached
+        """
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (d:Dump {id: $dump_id})
+                RETURN d.summary as summary, d.questions as questions
+            """, dump_id=dump_id)
+            
+            row = result.single()
+            if row and row["summary"]:
+                questions = json.loads(row["questions"]) if row["questions"] else []
+                return {
+                    "summary": row["summary"],
+                    "questions": questions
+                }
+            return None
+    
     def close(self):
         """Close database connection."""
         self.driver.close()
