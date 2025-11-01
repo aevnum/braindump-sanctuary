@@ -2,18 +2,40 @@
 
 ## 🚀 Getting Started
 
-### 1. **Installation**
+### 1. **Neo4j Setup** (Required)
+
+This app uses **Neo4j Aura** (graph database) as the backend. You need to create a free instance:
+
+1. **Create Neo4j Aura Instance:**
+   - Go to https://console.neo4j.io/
+   - Sign up for a free account (if you don't have one)
+   - Create a new "free" Aura instance
+   - Copy your connection details:
+     - Connection URI (e.g., `neo4j+ssc://xxxxx.databases.neo4j.io`)
+     - Username (default: `neo4j`)
+     - Password (set during creation)
+
+### 2. **Installation**
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
 # Set up environment variables
-cp .env.example .env  # Or create manually with:
-# GOOGLE_API_KEY=your_key_here
-# TAVILY_API_KEY=your_key_here (optional for web search)
+cp .env.example .env
+
+# Edit .env with your credentials:
+# NEO4J_URI=neo4j+ssc://your-instance-id.databases.neo4j.io
+# NEO4J_USER=neo4j
+# NEO4J_PASSWORD=your-password-here
+# GOOGLE_API_KEY=your_google_api_key_here
+# TAVILY_API_KEY=your_tavily_api_key_here (optional)
 ```
 
-### 2. **Run the App**
+**Where to get API keys:**
+- 🔑 **Google Gemini API**: https://aistudio.google.com/app/apikey (free)
+- 🔍 **Tavily Search API**: https://app.tavily.com (optional, for web search)
+
+### 3. **Run the App**
 ```bash
 streamlit run app.py
 ```
@@ -27,19 +49,19 @@ The app will open at `http://localhost:8501`
 ### Sidebar
 - **Navigate**: Radio buttons to switch between Home and Feed
 - **New Brain Dump**: Text area to add thoughts
-- **Add to Sanctuary**: Save your thought
+- **Add to Sanctuary**: Save your thought (stored in Neo4j)
 - **Clear**: Clear the input field
 - **Refresh Clusters**: Recalculate embeddings (computationally intensive)
-- **Clear All Dumps**: Delete everything and start fresh
+- **Clear All Dumps**: Delete everything from Neo4j and start fresh
 - **Total Brain Dumps**: Counter showing all saved thoughts
 
 ### Home Tab 🏠
 **What you see:**
 1. **Semantic Cluster Map** (top)
-   - Interactive Plotly visualization
+   - Interactive knowledge graph visualization
    - Each colored cluster = group of related thoughts
+   - Nodes connected by semantic similarity
    - Hover over points to see full text
-   - Shows up to 20 different clusters
 
 2. **All Brain Dumps Table** (bottom)
    - Columns: Brain Dump | Cluster Label | Created At
@@ -105,7 +127,12 @@ The app will open at `http://localhost:8501`
 
 ### Environment Variables (.env)
 ```ini
-# Required
+# Neo4j Aura (Required)
+NEO4J_URI=neo4j+ssc://your-instance-id.databases.neo4j.io
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your-password-here
+
+# Google Gemini API (Required)
 GOOGLE_API_KEY=sk-proj-xxxxxxxxxxxxxxx
 
 # Optional (for web search features)
@@ -127,29 +154,30 @@ showErrorDetails = true
 
 ---
 
-## 🔧 Common Tasks
-
-### Delete a Single Dump
-*Currently not supported via UI. To do:*
-1. Open `braindump.db` with SQLite browser
-2. Delete row from `dumps` table
-3. Refresh in app
+## 🔧 Database Management
 
 ### Re-calculate Clusters
 1. Go to Home tab
 2. Click 🔄 **Refresh** button
 3. Wait for spinner to complete
 
-### Export All Dumps
-*Currently not supported via UI. To do:*
-```bash
-sqlite3 braindump.db "SELECT id, text, created_at FROM dumps" > exports.csv
-```
-
 ### Clear Everything and Start Fresh
 1. Click 🗑️ **Clear All Dumps** in sidebar
 2. Confirm action
 3. Add new thoughts
+
+### Neo4j Maintenance
+Use the `neo4j_maintenance.py` script:
+```bash
+# Show database statistics
+python neo4j_maintenance.py stats
+
+# Remove duplicate brain dumps
+python neo4j_maintenance.py dedup
+
+# Clear all data (WARNING: Irreversible)
+python neo4j_maintenance.py clear
+```
 
 ---
 
@@ -166,9 +194,19 @@ sqlite3 braindump.db "SELECT id, text, created_at FROM dumps" > exports.csv
 - **Tavily Search**: Free tier allows ~100 searches/month
 - Set environment variables to enable features
 
+### Neo4j Query Performance
+- Dump and cluster lookups are indexed for fast retrieval
+- Embedding vectors cached in graph nodes
+- Knowledge graph relationships enable fast similarity searches
+
 ---
 
 ## 🐛 Troubleshooting
+
+### Neo4j Connection Error
+→ Verify your Aura instance is running: https://console.neo4j.io/
+→ Check `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` in `.env`
+→ Ensure your IP is allowlisted in Aura instance settings
 
 ### "API Key not found" error
 → Make sure `.env` file exists with `GOOGLE_API_KEY`
@@ -177,15 +215,11 @@ sqlite3 braindump.db "SELECT id, text, created_at FROM dumps" > exports.csv
 ### Clustering takes forever
 → You might have 100+ dumps
 → Only happens on first run or "Refresh"
-→ Results are cached, so it's faster next time
+→ Consider batching cluster operations for large datasets
 
 ### Feed cards showing mock data
 → Your `TAVILY_API_KEY` isn't set
 → Add it to `.env` and restart
-
-### Database locked error
-→ Close other connections to `braindump.db`
-→ Try deleting `braindump.db` and starting fresh
 
 ### "ModuleNotFoundError" for imports
 → Missing dependencies: `pip install -r requirements.txt`
@@ -197,7 +231,7 @@ sqlite3 braindump.db "SELECT id, text, created_at FROM dumps" > exports.csv
 
 ```
 braindump_core.py
-├── BrainDumpDB (SQLite storage)
+├── BrainDumpDB (Neo4j Graph Database)
 ├── EmbeddingEngine (sentence-transformers)
 ├── ClusterEngine (HDBSCAN + UMAP)
 └── Visualization (Plotly)
@@ -208,19 +242,25 @@ agents.py
 
 app.py
 ├── Sidebar (Input + Navigation)
-├── Home Tab (Clusters + Table)
+├── Home Tab (Knowledge Graph + Table)
 ├── Feed Tab (Blog-style cards)
 └── Helper Functions (Rendering)
+
+neo4j_maintenance.py
+├── Database statistics
+├── Deduplication
+└── Data cleanup
 ```
 
 ---
 
 ## 🎯 Next Steps
 
-1. **Add your first thought** via sidebar
-2. **Switch between Home and Feed** to see different views
-3. **Check back daily** to build your idea garden
-4. **Export insights** when you find patterns
+1. **Set up Neo4j Aura** instance at https://console.neo4j.io/
+2. **Add your first thought** via sidebar
+3. **Switch between Home and Feed** to see different views
+4. **Check back daily** to build your idea garden
+5. **Monitor performance** using `neo4j_maintenance.py stats`
 
 ---
 

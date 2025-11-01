@@ -1,9 +1,9 @@
 """
 Brain Dump Sanctuary - Core Pipeline (Day 1 MVP + LangChain Integration)
+Now with Neo4j Graph Database Backend
 Runs entirely on CPU - no GPU needed
 """
 
-import sqlite3
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import HDBSCAN
@@ -13,6 +13,8 @@ from datetime import datetime
 import json
 import os
 from dotenv import load_dotenv
+from neo4j import GraphDatabase
+from neo4j.exceptions import ServiceUnavailable, AuthError
 
 # Load environment variables from .env file
 load_dotenv()
@@ -23,98 +25,174 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableWithFallbacks
 
-# ============== 1. DATABASE LAYER ==============
+# ============== 1. DATABASE LAYER - Neo4j ==============
 class BrainDumpDB:
-    def __init__(self, db_path="braindump.db"):
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._init_db()
+    """
+    Neo4j-based graph database for Brain Dump Sanctuary.
     
-    def _init_db(self):
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS dumps (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                text TEXT NOT NULL,
-                embedding BLOB,
-                cluster_id INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        # Add cluster labels table
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS cluster_labels (
-                cluster_id INTEGER PRIMARY KEY,
-                label TEXT NOT NULL,
-                description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        self.conn.commit()
+    Graph Schema:
+    - Node: Dump {id, text, embedding[], cluster_id, created_at}
+    - Node: Cluster {id, label, description, created_at}
+    - Relationship: Dump -[:IN_CLUSTER]-> Cluster
+    - Relationship: Dump -[:SIMILAR_TO {weight}]-> Dump
+    """
+    
+    def __init__(self):
+        """Initialize Neo4j connection from environment variables."""
+        self.uri = os.getenv("NEO4J_URI", "neo4j://localhost:7687")
+        self.user = os.getenv("NEO4J_USER", "neo4j")
+        self.password = os.getenv("NEO4J_PASSWORD", "password")
+        
+        try:
+            self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
+            self.driver.verify_connectivity()
+            print(f"✓ Connected to Neo4j at {self.uri}")
+        except (ServiceUnavailable, AuthError) as e:
+            print(f"✗ Failed to connect to Neo4j: {e}")
+            print("  Make sure NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD are set in .env")
+            raise
+        
+        self._init_schema()
+    
+    def _init_schema(self):
+        """Initialize graph schema with nodes and indexes."""
+        with self.driver.session() as session:
+            # Create Dump nodes with indexes
+            session.run("""
+                CREATE INDEX dump_id_index IF NOT EXISTS 
+                FOR (d:Dump) ON (d.id)
+            """)
+            session.run("""
+                CREATE INDEX dump_created_index IF NOT EXISTS 
+                FOR (d:Dump) ON (d.created_at)
+            """)
+            
+            # Create Cluster nodes with indexes
+            session.run("""
+                CREATE INDEX cluster_id_index IF NOT EXISTS 
+                FOR (c:Cluster) ON (c.id)
+            """)
+            
+            print("✓ Graph schema initialized")
     
     def add_dump(self, text):
-        cursor = self.conn.execute(
-            "INSERT INTO dumps (text) VALUES (?)", 
-            (text,)
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+        """Add a new brain dump to the database."""
+        with self.driver.session() as session:
+            result = session.run("""
+                CREATE (d:Dump {
+                    id: randomUuid(),
+                    text: $text,
+                    created_at: datetime()
+                })
+                RETURN d.id as dump_id
+            """, text=text)
+            dump_id = result.single()["dump_id"]
+            return dump_id
     
     def get_all_dumps(self):
-        cursor = self.conn.execute("SELECT id, text, cluster_id FROM dumps")
-        return cursor.fetchall()
+        """Get all dumps with their cluster assignments and timestamps."""
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (d:Dump)
+                OPTIONAL MATCH (d)-[:IN_CLUSTER]->(c:Cluster)
+                RETURN d.id as id, d.text as text, c.id as cluster_id, d.created_at as created_at
+                ORDER BY d.created_at DESC
+            """)
+            return [(row["id"], row["text"], row["cluster_id"], row["created_at"]) for row in result]
     
     def update_embedding(self, dump_id, embedding):
-        embedding_blob = embedding.astype(np.float32).tobytes()
-        self.conn.execute(
-            "UPDATE dumps SET embedding = ? WHERE id = ?",
-            (embedding_blob, dump_id)
-        )
-        self.conn.commit()
+        """Store embedding vector for a dump."""
+        # Convert numpy array to list for Neo4j storage
+        embedding_list = embedding.astype(np.float32).tolist()
+        
+        with self.driver.session() as session:
+            session.run("""
+                MATCH (d:Dump {id: $dump_id})
+                SET d.embedding = $embedding
+            """, dump_id=dump_id, embedding=embedding_list)
     
     def update_cluster(self, dump_id, cluster_id):
-        self.conn.execute(
-            "UPDATE dumps SET cluster_id = ? WHERE id = ?",
-            (int(cluster_id), dump_id)
-        )
-        self.conn.commit()
+        """Assign dump to a cluster."""
+        with self.driver.session() as session:
+            # Remove existing cluster relationship
+            session.run("""
+                MATCH (d:Dump {id: $dump_id})-[r:IN_CLUSTER]->()
+                DELETE r
+            """, dump_id=dump_id)
+            
+            # Create or match cluster node and add relationship
+            session.run("""
+                MATCH (d:Dump {id: $dump_id})
+                MERGE (c:Cluster {id: $cluster_id})
+                ON CREATE SET c.created_at = datetime()
+                CREATE (d)-[:IN_CLUSTER]->(c)
+            """, dump_id=dump_id, cluster_id=int(cluster_id))
     
     def get_embeddings(self):
-        cursor = self.conn.execute("SELECT id, embedding FROM dumps WHERE embedding IS NOT NULL")
-        results = []
-        for row in cursor.fetchall():
-            dump_id, embedding_blob = row
-            embedding = np.frombuffer(embedding_blob, dtype=np.float32)
-            results.append((dump_id, embedding))
-        return results
+        """Retrieve all embeddings from database."""
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (d:Dump)
+                WHERE d.embedding IS NOT NULL
+                RETURN d.id as dump_id, d.embedding as embedding
+            """)
+            embeddings = []
+            for row in result:
+                dump_id = row["dump_id"]
+                embedding_list = row["embedding"]
+                # Convert list back to numpy array
+                embedding = np.array(embedding_list, dtype=np.float32)
+                embeddings.append((dump_id, embedding))
+            return embeddings
     
     def save_cluster_label(self, cluster_id, label, description=None):
-        """Save or update a cluster label"""
-        self.conn.execute(
-            "INSERT OR REPLACE INTO cluster_labels (cluster_id, label, description) VALUES (?, ?, ?)",
-            (int(cluster_id), label, description)
-        )
-        self.conn.commit()
+        """Save or update a cluster label."""
+        with self.driver.session() as session:
+            session.run("""
+                MERGE (c:Cluster {id: $cluster_id})
+                ON CREATE SET c.created_at = datetime()
+                SET c.label = $label, c.description = $description
+            """, cluster_id=int(cluster_id), label=label, description=description)
     
     def get_cluster_label(self, cluster_id):
-        """Get label for a specific cluster"""
-        cursor = self.conn.execute(
-            "SELECT label, description FROM cluster_labels WHERE cluster_id = ?",
-            (int(cluster_id),)
-        )
-        result = cursor.fetchone()
-        return result if result else (None, None)
+        """Get label for a specific cluster."""
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (c:Cluster {id: $cluster_id})
+                RETURN c.label as label, c.description as description
+            """, cluster_id=int(cluster_id))
+            row = result.single()
+            if row:
+                return (row["label"], row["description"])
+            return (None, None)
     
     def get_all_cluster_labels(self):
-        """Get all cluster labels"""
-        cursor = self.conn.execute("SELECT cluster_id, label, description FROM cluster_labels")
-        return {row[0]: {"label": row[1], "description": row[2]} for row in cursor.fetchall()}
+        """Get all cluster labels."""
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (c:Cluster)
+                RETURN c.id as cluster_id, c.label as label, c.description as description
+            """)
+            return {
+                row["cluster_id"]: {
+                    "label": row["label"],
+                    "description": row["description"]
+                }
+                for row in result
+            }
     
     def get_cluster_dumps(self, cluster_id):
-        """Get all dumps in a specific cluster"""
-        cursor = self.conn.execute(
-            "SELECT id, text FROM dumps WHERE cluster_id = ?",
-            (int(cluster_id),)
-        )
-        return cursor.fetchall()
+        """Get all dumps in a specific cluster."""
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (d:Dump)-[:IN_CLUSTER]->(c:Cluster {id: $cluster_id})
+                RETURN d.id as dump_id, d.text as text
+            """, cluster_id=int(cluster_id))
+            return [(row["dump_id"], row["text"]) for row in result]
+    
+    def close(self):
+        """Close database connection."""
+        self.driver.close()
 
 
 # ============== 2. EMBEDDING ENGINE ==============
@@ -613,7 +691,7 @@ def run_demo():
     print("=== BRAIN DUMP SANCTUARY - DEMO ===\n")
     
     # 1. Initialize
-    db = BrainDumpDB("braindump.db")
+    db = BrainDumpDB()
     embedder = EmbeddingEngine()
     clusterer = ClusterEngine(min_cluster_size=2)
     
@@ -628,14 +706,14 @@ def run_demo():
     texts = [d[1] for d in dumps]
     embeddings = embedder.embed(texts)
     
-    for i, (dump_id, text, _) in enumerate(dumps):
+    for i, (dump_id, text, _, created_at) in enumerate(dumps):
         db.update_embedding(dump_id, embeddings[i])
     
     # 4. Cluster
     print("\n[3/5] Performing semantic clustering...")
     clusters, coords_2d = clusterer.fit_predict(embeddings)
     
-    for i, (dump_id, _, _) in enumerate(dumps):
+    for i, (dump_id, _, _, _) in enumerate(dumps):
         db.update_cluster(dump_id, clusters[i])
     
     # 5. Auto-generate cluster labels using LangChain

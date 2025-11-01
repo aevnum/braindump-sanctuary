@@ -1,6 +1,6 @@
 from braindump_core import BrainDumpDB
 
-db = BrainDumpDB("braindump.db")
+db = BrainDumpDB()
 
 # Template categories - fill in your own questions
 categories = {

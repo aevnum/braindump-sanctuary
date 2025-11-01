@@ -33,7 +33,7 @@ st.set_page_config(
 
 # Initialize session state
 if 'db' not in st.session_state:
-    st.session_state.db = BrainDumpDB("braindump.db")
+    st.session_state.db = BrainDumpDB()
 if 'embedder' not in st.session_state:
     st.session_state.embedder = EmbeddingEngine()
 if 'clusterer' not in st.session_state:
@@ -112,10 +112,10 @@ with st.sidebar:
     if st.button("🗑️ Clear All Dumps", use_container_width=True):
         if not st.session_state.get('clearing', False):
             st.session_state.clearing = True
-            st.session_state.db.conn.execute("DELETE FROM dumps")
-            st.session_state.db.conn.execute("DELETE FROM cluster_labels")
-            st.session_state.db.conn.execute("DELETE FROM sqlite_sequence WHERE name='dumps'")
-            st.session_state.db.conn.commit()
+            # Clear all dumps and clusters from Neo4j
+            with st.session_state.db.driver.session() as session:
+                session.run("MATCH (d:Dump) DETACH DELETE d")
+                session.run("MATCH (c:Cluster) DETACH DELETE c")
             st.session_state.input_key = 0
             st.success("All dumps cleared!")
             st.rerun()
@@ -137,18 +137,22 @@ def render_brain_dump_table(dumps, cluster_labels_map):
     
     # Prepare data for table
     table_data = []
-    for dump_id, text, cluster_id in reversed(dumps):  # Most recent first
+    for dump_id, text, cluster_id, created_at in dumps:  # Already sorted by DESC in get_all_dumps()
         cluster_label = "Unclustered"
         if cluster_id is not None and cluster_id != -1 and cluster_id in cluster_labels_map:
             cluster_label = cluster_labels_map[cluster_id]['label']
         
-        # Get created_at from DB
-        cursor = st.session_state.db.conn.execute(
-            "SELECT created_at FROM dumps WHERE id = ?",
-            (dump_id,)
-        )
-        created_at = cursor.fetchone()
-        created_at_str = created_at[0] if created_at else "Unknown"
+        # Format timestamp - handle Neo4j datetime objects
+        if created_at:
+            try:
+                # Neo4j returns a neo4j.time.DateTime object, convert to string with timezone info
+                created_at_str = str(created_at)  # ISO format with timezone
+                # Extract just the date and time part (remove timezone for cleaner display)
+                created_at_str = created_at_str.split('+')[0] if '+' in created_at_str else created_at_str
+            except:
+                created_at_str = "Unknown"
+        else:
+            created_at_str = "Unknown"
         
         table_data.append({
             "Brain Dump": text,
@@ -241,14 +245,14 @@ def render_home():
                         embeddings = st.session_state.embedder.embed(texts)
                         
                         # Update embeddings in DB
-                        for i, (dump_id, _, _) in enumerate(dumps):
+                        for i, (dump_id, _, _, _) in enumerate(dumps):
                             st.session_state.db.update_embedding(dump_id, embeddings[i])
                         
                         # Cluster
                         clusters, coords_2d = st.session_state.clusterer.fit_predict(embeddings)
                         
                         # Update clusters in DB
-                        for i, (dump_id, _, _) in enumerate(dumps):
+                        for i, (dump_id, _, _, _) in enumerate(dumps):
                             st.session_state.db.update_cluster(dump_id, clusters[i])
                         
                         # Auto-generate cluster labels for new clusters
@@ -271,7 +275,7 @@ def render_home():
                     
                     # Load existing embeddings
                     embeddings_list = []
-                    for dump_id, _, _ in dumps:
+                    for dump_id, _, _, _ in dumps:
                         matching_emb = next((emb[1] for emb in existing_embeddings if emb[0] == dump_id), None)
                         if matching_emb is not None:
                             embeddings_list.append(matching_emb)
@@ -315,15 +319,15 @@ def render_feed():
     if len(dumps) == 0:
         st.info("👋 No brain dumps yet. Add one using the sidebar to get started!")
     else:
-        # Get 5 most recent dumps
-        recent_dumps = list(reversed(dumps[-5:]))
+        # Get 5 most recent dumps (already sorted DESC by created_at in get_all_dumps)
+        recent_dumps = dumps[:5]
         
         cluster_labels_map = st.session_state.db.get_all_cluster_labels()
         
         st.markdown(f"Showing **{len(recent_dumps)}** most recent brain dumps")
         st.divider()
         
-        for dump_id, text, cluster_id in recent_dumps:
+        for dump_id, text, cluster_id, created_at in recent_dumps:
             render_feed_card(dump_id, text, cluster_id, cluster_labels_map)
             st.markdown("")  # Spacing between cards
 
