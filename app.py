@@ -23,7 +23,7 @@ import pandas as pd
 from braindump_core import BrainDumpDB, EmbeddingEngine, ClusterEngine, create_knowledge_graph
 
 # Import Day 2 components
-from agents import QuestionAgent, SearchAgent, GenerationAgent
+from agents import QuestionAgent, SearchAgent, GenerationAgent, FeedAgent
 
 # Page config
 st.set_page_config(
@@ -45,6 +45,8 @@ if 'question_agent' not in st.session_state:
     st.session_state.question_agent = QuestionAgent()
 if 'generation_agent' not in st.session_state:
     st.session_state.generation_agent = GenerationAgent()
+if 'feed_agent' not in st.session_state:
+    st.session_state.feed_agent = FeedAgent(search_agent=st.session_state.search_agent)
 
 # Sidebar
 with st.sidebar:
@@ -199,9 +201,9 @@ def render_feed_card(dump_id, text, cluster_id, cluster_labels_map):
         
         st.divider()
         
-        # Summary from Search Agent
-        with st.spinner("Generating summary..."):
-            result = st.session_state.search_agent.deep_dive(text)
+        # Summary from Feed Agent (uses Perplexity Sonar if available)
+        with st.spinner("🧠 Generating Sonar summary..."):
+            result = st.session_state.feed_agent.generate_summary(text)
             st.markdown("**Summary:**")
             st.write(result['summary'])
         

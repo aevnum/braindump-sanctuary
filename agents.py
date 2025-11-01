@@ -17,6 +17,7 @@ in a more complex LangGraph orchestration graph.
 
 import os
 import json
+import requests
 
 # We'll use Google Gemini as the LLM
 import google.generativeai as genai
@@ -51,6 +52,13 @@ if not TAVILY_API_KEY:
     print("WARNING: TAVILY_API_KEY not found. SearchAgent will use mock data.")
     print("Get your API key from: https://app.tavily.com")
     TAVILY_API_KEY = None
+
+# --- Perplexity API Key Configuration ---
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+if not PERPLEXITY_API_KEY:
+    print("ℹ️ PERPLEXITY_API_KEY not found. Will use Tavily or mock data.")
+    print("Get your API key from: https://www.perplexity.ai/")
+    PERPLEXITY_API_KEY = None
 
 
 # ============== 1. Socratic Question Agent ==============
@@ -211,26 +219,93 @@ Each value should be a short paragraph (2-4 sentences).
 
 class SearchAgent:
     """
-    Real web search using Tavily API + Gemini synthesis.
-    Falls back to mock data if API key is missing.
+    Real web search using Perplexity Sonar (preferred) or Tavily API + Gemini synthesis.
+    Falls back to mock data if API keys are missing.
     """
     def __init__(self):
-        self.use_real_search = bool(TAVILY_API_KEY)
-        if self.use_real_search:
+        self.use_perplexity = bool(PERPLEXITY_API_KEY)
+        self.use_tavily = bool(TAVILY_API_KEY) and not self.use_perplexity
+        self.use_real_search = self.use_perplexity or self.use_tavily
+        
+        if self.use_perplexity:
+            self.perplexity_api_key = PERPLEXITY_API_KEY
+            print("✅ Initialized SearchAgent with Perplexity Sonar API")
+        elif self.use_tavily:
             self.tavily = TavilyClient(api_key=TAVILY_API_KEY)
             self.llm = genai.GenerativeModel("gemini-2.5-flash")
             print("✅ Initialized SearchAgent with Tavily API")
         else:
-            print("⚠️ Initialized MOCK SearchAgent (no Tavily key)")
+            print("⚠️ Initialized MOCK SearchAgent (no Perplexity or Tavily key)")
     
     def deep_dive(self, topic: str) -> dict:
         """
-        Searches web using Tavily, then synthesizes with Gemini.
+        Searches web using Perplexity Sonar or Tavily, then synthesizes.
         Falls back to mock if no API key.
         """
         if not self.use_real_search:
             return self._mock_search(topic)
         
+        if self.use_perplexity:
+            return self._perplexity_search(topic)
+        else:
+            return self._tavily_search(topic)
+    
+    def _perplexity_search(self, topic: str) -> dict:
+        """Search using Perplexity Sonar API"""
+        try:
+            print(f"🔍 Searching Perplexity Sonar for: {topic}")
+            
+            url = "https://api.perplexity.ai/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.perplexity_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "sonar",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a helpful research assistant. Provide comprehensive, well-sourced answers."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Please provide a comprehensive summary about: {topic}"
+                    }
+                ],
+                "max_tokens": 1000,
+                "temperature": 0.7,
+                "top_p": 0.9
+            }
+            
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            
+            data = response.json()
+            summary = data.get('choices', [{}])[0].get('message', {}).get('content', 'No summary generated')
+            
+            # Extract citations if available
+            sources = []
+            if 'citations' in data:
+                sources = [{"title": f"Source {i+1}", "url": "#", "snippet": cite} 
+                          for i, cite in enumerate(data['citations'][:5])]
+            
+            return {
+                "summary": summary,
+                "sources": sources
+            }
+            
+        except Exception as e:
+            print(f"❌ Perplexity search failed: {e}")
+            return {
+                "summary": f"Search failed: {str(e)}. Please check your Perplexity API key.",
+                "sources": []
+            }
+    
+    def _tavily_search(self, topic: str) -> dict:
+        """
+        Searches web using Tavily, then synthesizes with Gemini.
+        """
         try:
             # Step 1: Search with Tavily
             print(f"🔍 Searching Tavily for: {topic}")
@@ -288,22 +363,28 @@ Provide ONLY the summary text, no preamble."""
             return []
         
         try:
-            print(f"📰 Fetching articles for: {topic}")
-            search_results = self.tavily.search(
-                query=topic,
-                max_results=max_results,
-                search_depth="basic"
-            )
-            
-            articles = []
-            for result in search_results.get('results', []):
-                articles.append({
-                    'title': result.get('title', 'Untitled'),
-                    'url': result.get('url', '#'),
-                    'snippet': result.get('content', '')[:300] + "..."
-                })
-            
-            return articles
+            if self.use_perplexity:
+                print(f"📰 Fetching articles with Perplexity for: {topic}")
+                # Perplexity doesn't have a dedicated article fetch, use deep_dive results
+                result = self._perplexity_search(topic)
+                return result.get('sources', [])[:max_results]
+            else:
+                print(f"📰 Fetching articles for: {topic}")
+                search_results = self.tavily.search(
+                    query=topic,
+                    max_results=max_results,
+                    search_depth="basic"
+                )
+                
+                articles = []
+                for result in search_results.get('results', []):
+                    articles.append({
+                        'title': result.get('title', 'Untitled'),
+                        'url': result.get('url', '#'),
+                        'snippet': result.get('content', '')[:300] + "..."
+                    })
+                
+                return articles
             
         except Exception as e:
             print(f"❌ Article fetch failed: {e}")
@@ -396,7 +477,105 @@ as it directly matches your existing app.py implementation.
 """
 
 
-# ============== 4. Brain Dump Generation Agent ==============
+# ============== 4. Feed Agent (using Perplexity Sonar) ==============
+
+class FeedAgent:
+    """
+    Generates AI-powered summaries for feed cards using Perplexity Sonar.
+    If Perplexity is not available, falls back to SearchAgent.
+    """
+    def __init__(self, search_agent=None):
+        self.search_agent = search_agent
+        self.use_perplexity = bool(PERPLEXITY_API_KEY)
+        self.perplexity_api_key = PERPLEXITY_API_KEY
+        
+        if self.use_perplexity:
+            print("✅ Initialized FeedAgent with Perplexity Sonar")
+        else:
+            print("ℹ️ FeedAgent will use SearchAgent for summaries")
+    
+    def generate_summary(self, topic: str) -> dict:
+        """
+        Generate a comprehensive summary using Perplexity Sonar.
+        Returns: {"summary": str, "sources": list}
+        """
+        if self.use_perplexity:
+            return self._perplexity_summary(topic)
+        elif self.search_agent:
+            return self.search_agent.deep_dive(topic)
+        else:
+            return {
+                "summary": "Unable to generate summary. Please configure Perplexity or Tavily API.",
+                "sources": []
+            }
+    
+    def _perplexity_summary(self, topic: str) -> dict:
+        """Generate summary using Perplexity Sonar API"""
+        try:
+            print(f"🧠 Generating Sonar summary for: {topic}")
+            
+            url = "https://api.perplexity.ai/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.perplexity_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "sonar",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": """You are a brilliant synthesizer of knowledge. Given a brain dump topic, 
+provide a comprehensive yet concise summary that:
+1. Explains the core concept clearly
+2. Provides practical insights
+3. Connects to broader contexts
+4. Sparks further curiosity
+
+Keep the tone engaging and thought-provoking."""
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Provide a comprehensive summary about this brain dump topic: {topic}"
+                    }
+                ],
+                "max_tokens": 1500,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "search_domain_filter": ["perplexity.com"]
+            }
+            
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            
+            data = response.json()
+            summary = data.get('choices', [{}])[0].get('message', {}).get('content', 'No summary generated')
+            
+            # Extract citations if available
+            sources = []
+            if 'citations' in data:
+                sources = [{"title": f"Source {i+1}", "url": "#", "snippet": cite} 
+                          for i, cite in enumerate(data['citations'][:3])]
+            
+            return {
+                "summary": summary,
+                "sources": sources
+            }
+            
+        except Exception as e:
+            print(f"❌ Perplexity summary generation failed: {e}")
+            # Fallback to SearchAgent if available
+            if self.search_agent:
+                print("Falling back to SearchAgent...")
+                return self.search_agent.deep_dive(topic)
+            
+            return {
+                "summary": f"Error generating summary: {str(e)}",
+                "sources": []
+            }
+
+
+# ============== 5. Brain Dump Generation Agent ==============
 
 class GenerationAgent:
     """

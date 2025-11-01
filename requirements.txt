@@ -12,6 +12,7 @@ langchain-google-genai
 
 # Web Search
 tavily-python
+requests
 
 # Database - Graph DB (Neo4j)
 neo4j==5.17.0
