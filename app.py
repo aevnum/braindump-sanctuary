@@ -210,9 +210,21 @@ def render_feed_card(dump_id, text, cluster_id, cluster_labels_map):
             st.markdown("**Summary:**")
             st.write(cached_data['summary'])
             questions = cached_data['questions']
+            image_urls = cached_data.get('image_urls', [])
+            
+            # If cached data exists but images are missing, generate them
+            if not image_urls:
+                with st.spinner("📸 Fetching related images..."):
+                    try:
+                        image_urls = st.session_state.feed_agent.search_images(text, max_results=3)
+                        # Update cache with new image URLs
+                        st.session_state.db.save_feed_cache(dump_id, cached_data['summary'], questions, image_urls)
+                    except Exception as e:
+                        print(f"Error searching for images: {str(e)}")
+                        image_urls = []
         else:
             # Generate summary using Feed Agent
-            with st.spinner("🧠 Generating Sonar summary..."):
+            with st.spinner("🧠 Generating Sonar summary and images..."):
                 try:
                     result = st.session_state.feed_agent.generate_summary(text)
                     summary = result['summary']
@@ -222,12 +234,28 @@ def render_feed_card(dump_id, text, cluster_id, cluster_labels_map):
                     # Generate questions
                     questions = st.session_state.question_agent.generate_questions(text)
                     
-                    # Cache both the summary and questions
-                    st.session_state.db.save_feed_cache(dump_id, summary, questions)
+                    # Search for related images
+                    image_urls = st.session_state.feed_agent.search_images(text, max_results=3)
+                    
+                    # Cache summary, questions, and images
+                    st.session_state.db.save_feed_cache(dump_id, summary, questions, image_urls)
                 except Exception as e:
                     st.error(f"Error generating summary: {str(e)}")
                     summary = "Unable to generate summary. Please try again."
                     questions = []
+                    image_urls = []
+        
+        # Display images if available
+        if image_urls:
+            st.divider()
+            st.markdown("**Related Images:**")
+            cols = st.columns(min(3, len(image_urls)))  # Create up to 3 columns
+            for idx, image_url in enumerate(image_urls[:3]):
+                with cols[idx]:
+                    try:
+                        st.image(image_url, use_container_width=True)
+                    except Exception as e:
+                        st.caption(f"Could not load image: {image_url}")
         
         st.divider()
         

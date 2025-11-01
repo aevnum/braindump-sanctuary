@@ -483,16 +483,23 @@ class FeedAgent:
     """
     Generates AI-powered summaries for feed cards using Perplexity Sonar.
     If Perplexity is not available, falls back to SearchAgent.
+    Also fetches relevant images using Tavily image search.
     """
     def __init__(self, search_agent=None):
         self.search_agent = search_agent
         self.use_perplexity = bool(PERPLEXITY_API_KEY)
         self.perplexity_api_key = PERPLEXITY_API_KEY
+        self.tavily_client = TavilyClient(api_key=TAVILY_API_KEY) if TAVILY_API_KEY else None
         
         if self.use_perplexity:
             print("✅ Initialized FeedAgent with Perplexity Sonar")
         else:
             print("ℹ️ FeedAgent will use SearchAgent for summaries")
+        
+        if self.tavily_client:
+            print("📸 Initialized FeedAgent with Tavily Image Search")
+        else:
+            print("⚠️ Tavily API key not configured. Image search disabled.")
     
     def generate_summary(self, topic: str) -> dict:
         """
@@ -573,6 +580,55 @@ Keep the tone engaging and thought-provoking."""
                 "summary": f"Error generating summary: {str(e)}",
                 "sources": []
             }
+    
+    def search_images(self, topic: str, max_results: int = 3) -> list[str]:
+        """
+        Search for relevant images using Tavily image search API.
+        
+        Args:
+            topic: The topic to search for images
+            max_results: Maximum number of images to return (default: 3)
+            
+        Returns:
+            List of image URLs (up to max_results)
+        """
+        if not self.tavily_client:
+            print("⚠️ Tavily API key not configured. Cannot search for images.")
+            return []
+        
+        try:
+            print(f"📸 Searching for images related to: {topic}")
+            
+            # Use Tavily to search for images
+            response = self.tavily_client.search(
+                query=topic,
+                max_results=max_results,
+                include_images=True
+            )
+            
+            # Extract image URLs from results
+            image_urls = []
+            
+            # Try to extract images from the response
+            if 'images' in response:
+                for img in response['images'][:max_results]:
+                    if isinstance(img, dict) and 'url' in img:
+                        image_urls.append(img['url'])
+                    elif isinstance(img, str):
+                        image_urls.append(img)
+            
+            # If no images found in dedicated images field, try results
+            if not image_urls and 'results' in response:
+                for result in response['results'][:max_results]:
+                    if isinstance(result, dict) and 'image' in result:
+                        image_urls.append(result['image'])
+            
+            print(f"✓ Found {len(image_urls)} relevant images")
+            return image_urls[:max_results]
+            
+        except Exception as e:
+            print(f"❌ Image search failed: {e}")
+            return []
 
 
 # ============== 5. Brain Dump Generation Agent ==============

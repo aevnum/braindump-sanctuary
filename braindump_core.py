@@ -210,43 +210,48 @@ class BrainDumpDB:
             dump_id = result.single()["dump_id"]
             return dump_id
     
-    def save_feed_cache(self, dump_id, summary, questions):
+    def save_feed_cache(self, dump_id, summary, questions, image_urls=None):
         """
-        Store cached feed data (summary and questions) for a dump.
+        Store cached feed data (summary, questions, and image URLs) for a dump.
         
         Args:
             dump_id: ID of the dump
             summary: Summary text from FeedAgent
             questions: List of reflection questions
+            image_urls: List of image URLs related to the brain dump
         """
         with self.driver.session() as session:
             # Store as JSON strings for Neo4j compatibility
             questions_json = json.dumps(questions) if isinstance(questions, list) else questions
+            image_urls_json = json.dumps(image_urls) if image_urls else json.dumps([])
             
             session.run("""
                 MATCH (d:Dump {id: $dump_id})
                 SET d.summary = $summary,
                     d.questions = $questions,
+                    d.image_urls = $image_urls,
                     d.feed_cache_generated_at = datetime()
-            """, dump_id=dump_id, summary=summary, questions=questions_json)
+            """, dump_id=dump_id, summary=summary, questions=questions_json, image_urls=image_urls_json)
     
     def get_feed_cache(self, dump_id):
         """
         Retrieve cached feed data for a dump.
-        Returns: {"summary": str, "questions": list} or None if not cached
+        Returns: {"summary": str, "questions": list, "image_urls": list} or None if not cached
         """
         with self.driver.session() as session:
             result = session.run("""
                 MATCH (d:Dump {id: $dump_id})
-                RETURN d.summary as summary, d.questions as questions
+                RETURN d.summary as summary, d.questions as questions, d.image_urls as image_urls
             """, dump_id=dump_id)
             
             row = result.single()
             if row and row["summary"]:
                 questions = json.loads(row["questions"]) if row["questions"] else []
+                image_urls = json.loads(row["image_urls"]) if row["image_urls"] else []
                 return {
                     "summary": row["summary"],
-                    "questions": questions
+                    "questions": questions,
+                    "image_urls": image_urls
                 }
             return None
     
