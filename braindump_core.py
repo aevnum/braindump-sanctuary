@@ -183,7 +183,8 @@ Rules:
 - Be specific and insightful
 - Use natural language, not generic terms
 - Focus on the underlying curiosity or topic
-- Examples: "Consciousness & Mind", "Animal Behavior", "Physics Mysteries"
+- Be specific if entries are less.
+- Be broad if entries are more.
 
 Label:"""
             )
@@ -262,8 +263,180 @@ Label:"""
 
 
 # ============== 4. VISUALIZATION ==============
+def build_graph_edges(embeddings, clusters, max_edges_per_node=5, similarity_threshold=0.7):
+    """Build edges between semantically similar items (Obsidian knowledge graph style)"""
+    from sklearn.metrics.pairwise import cosine_similarity
+    
+    edges = []
+    similarities = cosine_similarity(embeddings)
+    
+    # Add edges between items in same cluster
+    unique_clusters = set(clusters)
+    for cluster_id in unique_clusters:
+        if cluster_id == -1:  # Skip noise
+            continue
+        
+        cluster_indices = np.where(clusters == cluster_id)[0]
+        
+        # Connect items within cluster (up to max_edges_per_node each)
+        for i in cluster_indices:
+            # Find most similar items in same cluster
+            cluster_similarities = [
+                (j, similarities[i][j]) for j in cluster_indices if i != j
+            ]
+            cluster_similarities.sort(key=lambda x: x[1], reverse=True)
+            
+            for j, sim in cluster_similarities[:max_edges_per_node]:
+                if i < j:  # Avoid duplicates
+                    edges.append((i, j, sim))
+    
+    return edges
+
+
+def create_knowledge_graph(dump_data, coords_2d, clusters, cluster_labels=None, embeddings=None):
+    """
+    Obsidian-style knowledge graph visualization with force-directed layout.
+    Shows connections between related brain dumps in a network style.
+    """
+    
+    fig = go.Figure()
+    
+    # Color palette for clusters
+    cluster_colors = [
+        '#FF6B6B',  # Red
+        '#4ECDC4',  # Teal
+        '#45B7D1',  # Sky Blue
+        '#FFA07A',  # Light Salmon
+        '#98D8C8',  # Mint
+        '#F7DC6F',  # Yellow
+        '#BB8FCE',  # Purple
+        '#85C1E2',  # Light Blue
+        '#F8B739',  # Orange
+        '#52BE80',  # Green
+        '#EC7063',  # Coral
+        '#AF7AC5',  # Lavender
+        '#5DADE2',  # Ocean Blue
+        '#48C9B0',  # Turquoise
+        '#F1948A',  # Pink
+        '#85929E',  # Gray Blue
+        '#F39C12',  # Dark Orange
+        '#3498DB',  # Bright Blue
+        '#E74C3C',  # Bright Red
+        '#9B59B6'   # Violet
+    ]
+    
+    # Color map for clusters
+    unique_clusters = set(clusters)
+    colors = {-1: '#95A5A6'}  # Gray for noise points
+    
+    for i, c in enumerate([c for c in unique_clusters if c != -1]):
+        colors[c] = cluster_colors[i % len(cluster_colors)]
+    
+    # Build edges between related items
+    edges = []
+    if embeddings is not None:
+        edges = build_graph_edges(embeddings, clusters)
+    
+    # Draw edges first (so they appear behind nodes)
+    for i, j, similarity in edges:
+        x0, y0 = coords_2d[i]
+        x1, y1 = coords_2d[j]
+        
+        # Edge opacity based on similarity
+        edge_opacity = 0.2 + (similarity - 0.7) * 0.4  # Range: 0.2-0.6
+        edge_opacity = max(0.1, min(0.6, edge_opacity))
+        
+        fig.add_trace(go.Scatter(
+            x=[x0, x1, None],
+            y=[y0, y1, None],
+            mode='lines',
+            line=dict(
+                width=1.5,
+                color=f'rgba(200, 200, 200, {edge_opacity})',
+            ),
+            hoverinfo='none',
+            showlegend=False,
+            name='',
+        ))
+    
+    # Draw nodes (clusters)
+    for cluster_id in unique_clusters:
+        mask = clusters == cluster_id
+        cluster_coords = coords_2d[mask]
+        cluster_texts = [dump_data[i][1] for i in range(len(dump_data)) if clusters[i] == cluster_id]
+        
+        # Get cluster label if available
+        if cluster_labels and cluster_id in cluster_labels:
+            label = cluster_labels[cluster_id]
+        else:
+            label = f"Cluster {cluster_id}" if cluster_id != -1 else "Unclustered"
+        
+        # Determine node size (larger for bigger clusters)
+        node_size = min(24, 14 + len(cluster_texts) // 2)
+        
+        fig.add_trace(go.Scatter(
+            x=cluster_coords[:, 0],
+            y=cluster_coords[:, 1],
+            mode='markers',
+            name=label,
+            marker=dict(
+                size=node_size,
+                color=colors[cluster_id],
+                line=dict(width=2, color='rgba(255, 255, 255, 0.8)'),
+                opacity=0.95,
+                symbol='circle',
+            ),
+            text=cluster_texts,
+            hovertext=[f"<b>{text}</b>" for text in cluster_texts],
+            hoverinfo='text',
+            showlegend=True,
+        ))
+    
+    fig.update_layout(
+        title={
+            'text': "🧠 Brain Dump Sanctuary - Knowledge Graph",
+            'x': 0.5,
+            'xanchor': 'center',
+            'font': {'size': 20, 'color': 'white'}
+        },
+        showlegend=True,
+        hovermode='closest',
+        width=1400,
+        height=800,
+        plot_bgcolor='#0d1117',
+        paper_bgcolor='#0d1117',
+        font=dict(color='white', family='monospace'),
+        xaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+            showline=False,
+        ),
+        yaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+            showline=False,
+        ),
+        margin=dict(l=0, r=200, t=50, b=0),
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=1.02,
+            bgcolor='rgba(13, 17, 23, 0.9)',
+            bordercolor='#30363d',
+            borderwidth=1,
+            font=dict(size=11),
+        ),
+    )
+    
+    return fig
+
+
 def create_cluster_graph(dump_data, coords_2d, clusters, cluster_labels=None):
-    """Interactive Plotly visualization with cluster labels"""
+    """Interactive Plotly visualization with cluster labels (Legacy - use create_knowledge_graph instead)"""
     
     fig = go.Figure()
     
@@ -478,10 +651,10 @@ def run_demo():
         print(f"  Cluster {cluster_id}: '{label}'")
     
     # 6. Visualize
-    print("\n[5/5] Creating visualization...")
-    fig = create_cluster_graph(dumps, coords_2d, clusters, cluster_labels)
-    fig.write_html("brain_dump_clusters.html")
-    print("✓ Saved to: brain_dump_clusters.html")
+    print("\n[5/5] Creating knowledge graph visualization...")
+    fig = create_knowledge_graph(dumps, coords_2d, clusters, cluster_labels, embeddings)
+    fig.write_html("brain_dump_knowledge_graph.html")
+    print("✓ Saved to: brain_dump_knowledge_graph.html")
     
     # 7. Show cluster insights
     print("\n=== CLUSTER INSIGHTS ===")

@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 # Import Day 1 components
-from braindump_core import BrainDumpDB, EmbeddingEngine, ClusterEngine, create_cluster_graph
+from braindump_core import BrainDumpDB, EmbeddingEngine, ClusterEngine, create_knowledge_graph
 
 # Import Day 2 components
 from agents import QuestionAgent, SearchAgent
@@ -289,7 +289,7 @@ def render_home():
                     unique_clusters = set(clusters) - {-1}
                 
                 # Visualize with labels
-                fig = create_cluster_graph(dumps, coords_2d, clusters, cluster_labels_dict)
+                fig = create_knowledge_graph(dumps, coords_2d, clusters, cluster_labels_dict, embeddings)
                 st.plotly_chart(fig, use_container_width=True)
                         
             except Exception as e:
