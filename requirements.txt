@@ -14,7 +14,7 @@ langchain-google-genai
 tavily-python
 
 # Visualization & UI
-streamlit==1.28.0
+streamlit==1.51.0
 plotly==5.18.0
 
 # Data
