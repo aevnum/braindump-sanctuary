@@ -14,6 +14,7 @@ braindump_sanctuary/
 import streamlit as st
 import sys
 from datetime import datetime
+import pytz
 import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
@@ -22,7 +23,7 @@ import pandas as pd
 from braindump_core import BrainDumpDB, EmbeddingEngine, ClusterEngine, create_knowledge_graph
 
 # Import Day 2 components
-from agents import QuestionAgent, SearchAgent
+from agents import QuestionAgent, SearchAgent, GenerationAgent
 
 # Page config
 st.set_page_config(
@@ -42,6 +43,8 @@ if 'search_agent' not in st.session_state:
     st.session_state.search_agent = SearchAgent()
 if 'question_agent' not in st.session_state:
     st.session_state.question_agent = QuestionAgent()
+if 'generation_agent' not in st.session_state:
+    st.session_state.generation_agent = GenerationAgent()
 
 # Sidebar
 with st.sidebar:
@@ -142,15 +145,34 @@ def render_brain_dump_table(dumps, cluster_labels_map):
         if cluster_id is not None and cluster_id != -1 and cluster_id in cluster_labels_map:
             cluster_label = cluster_labels_map[cluster_id]['label']
         
-        # Format timestamp - handle Neo4j datetime objects
+        # Format timestamp - handle Neo4j datetime objects and convert to IST
         if created_at:
             try:
-                # Neo4j returns a neo4j.time.DateTime object, convert to string with timezone info
-                created_at_str = str(created_at)  # ISO format with timezone
-                # Extract just the date and time part (remove timezone for cleaner display)
-                created_at_str = created_at_str.split('+')[0] if '+' in created_at_str else created_at_str
-            except:
-                created_at_str = "Unknown"
+                # Neo4j returns a neo4j.time.DateTime object
+                # Convert to IST (Indian Standard Time: UTC+5:30)
+                ist = pytz.timezone('Asia/Kolkata')
+                
+                # Parse the datetime string if needed
+                if isinstance(created_at, str):
+                    # Try to parse ISO format datetime
+                    dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                else:
+                    # Assume it's a datetime object
+                    dt = created_at
+                
+                # Make it timezone-aware if it isn't already
+                if dt.tzinfo is None:
+                    # Assume UTC if no timezone
+                    dt = pytz.UTC.localize(dt)
+                
+                # Convert to IST
+                dt_ist = dt.astimezone(ist)
+                
+                # Format as readable string
+                created_at_str = dt_ist.strftime("%d %b %Y, %I:%M %p IST")
+            except Exception as e:
+                print(f"Timestamp conversion error: {e}")
+                created_at_str = str(created_at) if created_at else "Unknown"
         else:
             created_at_str = "Unknown"
         
@@ -235,8 +257,11 @@ def render_home():
                 # Check if cluster labels already exist
                 existing_labels = st.session_state.db.get_all_cluster_labels()
                 
-                # Only recalculate if we have new dumps without embeddings OR force refresh
-                need_recalculation = force_refresh or not (existing_ids >= all_dump_ids)
+                # Check if reducer exists (used for cached path)
+                has_reducer = st.session_state.clusterer.reducer is not None
+                
+                # Only recalculation if we have new dumps without embeddings OR force refresh OR no reducer yet
+                need_recalculation = force_refresh or not (existing_ids >= all_dump_ids) or not has_reducer
                 
                 if need_recalculation:
                     with st.spinner("Generating embeddings and clustering..."):
@@ -251,18 +276,30 @@ def render_home():
                         # Cluster
                         clusters, coords_2d = st.session_state.clusterer.fit_predict(embeddings)
                         
+                        # Track which clusters have changed
+                        clusters_with_changes = set()
+                        
+                        # Check for cluster ID changes for each dump
+                        for i, (dump_id, _, old_cluster_id, _) in enumerate(dumps):
+                            new_cluster_id = clusters[i]
+                            if old_cluster_id != new_cluster_id:
+                                clusters_with_changes.add(new_cluster_id)
+                                if old_cluster_id is not None and old_cluster_id != -1:
+                                    clusters_with_changes.add(old_cluster_id)
+                        
                         # Update clusters in DB
                         for i, (dump_id, _, _, _) in enumerate(dumps):
                             st.session_state.db.update_cluster(dump_id, clusters[i])
                         
-                        # Auto-generate cluster labels for new clusters
+                        # Auto-generate cluster labels for new clusters or changed clusters
                         cluster_labels_dict = {}
                         unique_clusters = set(clusters) - {-1}
                         
                         if unique_clusters:
                             with st.spinner("Generating cluster labels with Gemini..."):
                                 for cluster_id in unique_clusters:
-                                    if cluster_id not in existing_labels:
+                                    # Re-label if cluster is new OR if it had changes
+                                    if cluster_id not in existing_labels or cluster_id in clusters_with_changes:
                                         cluster_dumps = [dumps[i][1] for i in range(len(dumps)) if clusters[i] == cluster_id]
                                         label = st.session_state.clusterer.generate_cluster_label(cluster_dumps)
                                         cluster_labels_dict[cluster_id] = label
@@ -300,6 +337,80 @@ def render_home():
                 st.error(f"❌ Clustering error: {str(e)}")
                 if st.checkbox("Show technical details"):
                     st.exception(e)
+        
+        st.divider()
+        
+        # Consolidated Cluster Generation Section
+        st.subheader("🧬 Generate New Brain Dumps for All Clusters")
+        
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.markdown("*Generate one new braindump for each cluster in a single click*")
+        
+        with col2:
+            if st.button("✨ Generate All", key="gen_all_clusters", help="Generate a new braindump for each cluster", type="primary"):
+                try:
+                    # Get all clusters with their dumps
+                    all_cluster_labels = st.session_state.db.get_all_cluster_labels()
+                    
+                    if all_cluster_labels:
+                        generated_count = 0
+                        failed_clusters = []
+                        
+                        with st.spinner("🤖 Generating braindumps for all clusters..."):
+                            generated_dumps = []  # Track generated dumps and their cluster IDs
+                            
+                            for cluster_id, cluster_info in all_cluster_labels.items():
+                                cluster_label = cluster_info['label']
+                                
+                                # Skip clusters with None label
+                                if cluster_label is None:
+                                    failed_clusters.append(f"Cluster {cluster_id} (no label)")
+                                    continue
+                                
+                                # Get dumps in this cluster
+                                cluster_dumps = st.session_state.db.get_cluster_dumps(cluster_id)
+                                if cluster_dumps:
+                                    cluster_dump_texts = [d[1] for d in cluster_dumps]
+                                    
+                                    try:
+                                        # Generate the braindump
+                                        generated_text = st.session_state.generation_agent.generate_braindump(
+                                            cluster_name=cluster_label,
+                                            entries=cluster_dump_texts
+                                        )
+                                        
+                                        # Check if there was an error
+                                        if not generated_text.startswith("Error"):
+                                            # Add to database with cluster assignment
+                                            new_dump_id = st.session_state.db.add_generated_dump(generated_text, cluster_id)
+                                            
+                                            # Compute embedding for the generated dump immediately
+                                            # so it doesn't trigger a full recalculation on rerun
+                                            generated_embedding = st.session_state.embedder.embed([generated_text])[0]
+                                            st.session_state.db.update_embedding(new_dump_id, generated_embedding)
+                                            
+                                            generated_dumps.append((new_dump_id, generated_text, cluster_id))
+                                            generated_count += 1
+                                        else:
+                                            failed_clusters.append(cluster_label)
+                                    except Exception as e:
+                                        print(f"Error generating for {cluster_label}: {e}")
+                                        failed_clusters.append(cluster_label)
+                        
+                        # Show results
+                        if generated_count > 0:
+                            st.success(f"✨ Generated {generated_count} new brain dump{'s' if generated_count != 1 else ''}!")
+                        
+                        if failed_clusters:
+                            st.warning(f"⚠️ Could not generate for: {', '.join(failed_clusters)}")
+                        
+                        if generated_count > 0:
+                            st.rerun()
+                    else:
+                        st.info("💡 No clusters available yet.")
+                except Exception as e:
+                    st.error(f"Error generating braindumps: {str(e)}")
         
         st.divider()
         

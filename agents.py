@@ -30,11 +30,6 @@ from tavily import TavilyClient
 # Add your "GOOGLE_API_KEY" to Kaggle secrets or environment variables.
 # Get your free key from: https://aistudio.google.com/app/apikey
 try:
-    # Try to get from Kaggle secrets
-    from kaggle_secrets import UserSecretsClient
-    secrets = UserSecretsClient()
-    API_KEY = secrets.get_secret("GOOGLE_API_KEY")
-except ImportError:
     load_dotenv()
     # Fallback for local dev or other environments
     API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -399,3 +394,79 @@ To implement your full "LangGraph" vision, you would:
 This simple class-based approach is used for the Day 2 demo
 as it directly matches your existing app.py implementation.
 """
+
+
+# ============== 4. Brain Dump Generation Agent ==============
+
+class GenerationAgent:
+    """
+    Generates creative braindumps based on a cluster's theme and entries.
+    Takes a cluster name and list of entries, uses Gemini to synthesize
+    a new braindump that fits the cluster and would be interesting to read.
+    """
+    def __init__(self, model="gemini-2.5-flash"):
+        self.model = model
+        self.system_prompt = """
+You are a creative brainstorming agent. You've been given a cluster of related thoughts/brain dumps,
+along with the cluster's theme.
+
+Your task is to generate ONE new, engaging brain dump entry that:
+1. Fits naturally with the theme and existing entries
+2. Is inspired by the existing entries but presents a NEW angle or question
+3. Is concise (1-2 sentences), matching the style of the existing entries
+4. Introduces something the user might find interesting to explore
+5. Does NOT simply repeat or combine existing entries
+
+Generate ONLY the new brain dump text itself - no preamble, no explanation.
+Just the thoughtful question or observation that belongs in this cluster.
+"""
+
+    def generate_braindump(self, cluster_name: str, entries: list[str]) -> str:
+        """
+        Generates a new braindump for a cluster.
+        
+        Args:
+            cluster_name: The name/label of the cluster (e.g., "Dreams and Consciousness")
+            entries: List of existing brain dump texts in this cluster
+            
+        Returns:
+            Generated brain dump text as a string
+        """
+        if API_KEY == "YOUR_API_KEY_HERE":
+            return "Error: GOOGLE_API_KEY is not set. Please add it to your environment."
+
+        try:
+            # Create Gemini model
+            model = genai.GenerativeModel(
+                model_name=self.model,
+                generation_config={
+                    "temperature": 0.8,  # Higher temperature for more creativity
+                }
+            )
+            
+            # Format entries for the prompt
+            entries_str = "\n".join([f"- {entry}" for entry in entries])
+            
+            # Build the prompt
+            prompt = f"""{self.system_prompt}
+
+Cluster Theme: "{cluster_name}"
+
+Existing entries in this cluster:
+{entries_str}
+
+Generate a new, creative brain dump entry that fits this cluster:"""
+            
+            # Generate response
+            response = model.generate_content(prompt)
+            generated_text = response.text.strip()
+            
+            # Clean up any extra quotes or markers
+            if generated_text.startswith('"') and generated_text.endswith('"'):
+                generated_text = generated_text[1:-1]
+            
+            return generated_text
+            
+        except Exception as e:
+            print(f"Error in GenerationAgent: {e}")
+            return f"Error generating braindump: {str(e)}"

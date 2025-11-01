@@ -23,6 +23,7 @@ plotly==5.18.0
 # Data
 pandas==2.1.3
 numpy==1.24.3
+pytz
 
 # Environment
 python-dotenv

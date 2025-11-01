@@ -190,6 +190,26 @@ class BrainDumpDB:
             """, cluster_id=int(cluster_id))
             return [(row["dump_id"], row["text"]) for row in result]
     
+    def add_generated_dump(self, text, cluster_id):
+        """
+        Add a generated braindump directly to a specific cluster.
+        Returns the new dump_id.
+        """
+        with self.driver.session() as session:
+            result = session.run("""
+                CREATE (d:Dump {
+                    id: randomUuid(),
+                    text: $text,
+                    created_at: datetime()
+                })
+                WITH d
+                MATCH (c:Cluster {id: $cluster_id})
+                CREATE (d)-[:IN_CLUSTER]->(c)
+                RETURN d.id as dump_id
+            """, text=text, cluster_id=int(cluster_id))
+            dump_id = result.single()["dump_id"]
+            return dump_id
+    
     def close(self):
         """Close database connection."""
         self.driver.close()
