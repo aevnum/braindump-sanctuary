@@ -18,6 +18,7 @@ import pytz
 import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
+from fuzzywuzzy import fuzz
 
 # Import Day 1 components
 from braindump_core import BrainDumpDB, EmbeddingEngine, ClusterEngine, create_knowledge_graph
@@ -475,6 +476,12 @@ def render_feed():
     else:
         cluster_labels_map = st.session_state.db.get_all_cluster_labels()
         
+        # Initialize search mode state if not exists
+        if 'search_mode' not in st.session_state:
+            st.session_state.search_mode = False
+        if 'selected_dump_id' not in st.session_state:
+            st.session_state.selected_dump_id = None
+        
         # Search and filter section
         col1, col2 = st.columns([4, 1])
         
@@ -482,44 +489,55 @@ def render_feed():
             search_query = st.text_input(
                 "🔍 Search brain dumps",
                 placeholder="Type to search...",
-                key="feed_search"
+                key="feed_search",
+                help="Search using fuzzy matching (handles typos)"
             )
         
-        # Initialize search mode state if not exists
-        if 'search_mode' not in st.session_state:
-            st.session_state.search_mode = False
-        if 'selected_dump_id' not in st.session_state:
-            st.session_state.selected_dump_id = None
-        
-        # Get filtered dumps based on search
+        # Perform fuzzy matching using fuzzywuzzy
+        suggestions = []
         if search_query.strip():
-            # Filter dumps by text matching (case-insensitive)
-            filtered_dumps = [
-                d for d in dumps 
-                if search_query.lower() in d[1].lower()
-            ]
+            # Calculate fuzzy match score for each dump
+            for dump_id, text, cluster_id, created_at in dumps:
+                # Use first 100 chars of text for matching
+                match_text = text[:100]
+                # Use token_sort_ratio for better matching with word order variations
+                score = fuzz.token_sort_ratio(search_query.lower(), match_text.lower())
+                suggestions.append({
+                    'dump_id': dump_id,
+                    'text': text,
+                    'cluster_id': cluster_id,
+                    'score': score,
+                    'match_text': match_text
+                })
             
-            # Show autocomplete suggestions in a selectbox
-            if filtered_dumps:
-                st.write(f"**Found {len(filtered_dumps)} matching brain dump{'s' if len(filtered_dumps) != 1 else ''}:**")
+            # Sort by score (higher = better match) and take top 8
+            suggestions = sorted(suggestions, key=lambda x: x['score'], reverse=True)[:8]
+            
+            if suggestions:
+                st.write(f"**Found {len(suggestions)} best matches:**")
                 
-                # Create a list of dump texts for selection
-                dump_options = [f"{d[1][:60]}..." if len(d[1]) > 60 else d[1] for d in filtered_dumps]
+                # Create dropdown options (truncated text)
+                suggestion_texts = [
+                    s['text'][:70] + "..." if len(s['text']) > 70 else s['text'] 
+                    for s in suggestions
+                ]
                 
+                # Show suggestions as a dropdown with match score
                 selected_idx = st.selectbox(
-                    "Select a brain dump to view",
-                    range(len(filtered_dumps)),
-                    format_func=lambda i: dump_options[i],
-                    key="dump_selector"
+                    "Select a brain dump",
+                    range(len(suggestions)),
+                    format_func=lambda i: f"({suggestions[i]['score']}%) {suggestion_texts[i]}",
+                    key="feed_suggestions_dropdown",
+                    help="Suggestions ranked by relevance (higher % = better match)"
                 )
                 
                 if selected_idx is not None:
                     st.session_state.search_mode = True
-                    st.session_state.selected_dump_id = filtered_dumps[selected_idx][0]
+                    st.session_state.selected_dump_id = suggestions[selected_idx]['dump_id']
             else:
-                st.warning(f"No brain dumps found matching '{search_query}'")
+                st.warning(f"No brain dumps found for '{search_query}'")
         else:
-            # No search query - show recent dumps
+            # No search query - clear search mode
             st.session_state.search_mode = False
             st.session_state.selected_dump_id = None
         
@@ -550,6 +568,7 @@ def render_feed():
             # Show 5 most recent dumps (default view)
             recent_dumps = dumps[:5]
             st.markdown(f"Showing **{len(recent_dumps)}** most recent brain dumps")
+            st.divider()
             
             for dump_id, text, cluster_id, created_at in recent_dumps:
                 render_feed_card(dump_id, text, cluster_id, cluster_labels_map)

@@ -12,6 +12,7 @@ langchain-google-genai
 
 # Web Search
 tavily-python
+fuzzywuzzy[speedup]
 requests
 
 # Database - Graph DB (Neo4j)
