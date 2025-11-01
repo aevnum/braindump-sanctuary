@@ -75,8 +75,35 @@ class BrainDumpDB:
             
             print("✓ Graph schema initialized")
     
+    def check_duplicate(self, text):
+        """
+        Check if a dump with the same text already exists in the database.
+        Returns the dump_id if duplicate found, None otherwise.
+        """
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (d:Dump {text: $text})
+                RETURN d.id as dump_id
+                LIMIT 1
+            """, text=text)
+            row = result.single()
+            if row:
+                return row["dump_id"]
+            return None
+    
     def add_dump(self, text):
-        """Add a new brain dump to the database."""
+        """
+        Add a new brain dump to the database.
+        Returns (dump_id, is_duplicate) tuple.
+        If duplicate exists, returns (existing_dump_id, True).
+        If new dump created, returns (new_dump_id, False).
+        """
+        # Check for duplicate first
+        existing_id = self.check_duplicate(text)
+        if existing_id:
+            return (existing_id, True)
+        
+        # No duplicate, create new dump
         with self.driver.session() as session:
             result = session.run("""
                 CREATE (d:Dump {
@@ -87,7 +114,7 @@ class BrainDumpDB:
                 RETURN d.id as dump_id
             """, text=text)
             dump_id = result.single()["dump_id"]
-            return dump_id
+            return (dump_id, False)
     
     def get_all_dumps(self):
         """Get all dumps with their cluster assignments and timestamps."""
@@ -193,8 +220,16 @@ class BrainDumpDB:
     def add_generated_dump(self, text, cluster_id):
         """
         Add a generated braindump directly to a specific cluster.
-        Returns the new dump_id.
+        Returns (dump_id, is_duplicate) tuple.
+        If duplicate exists, returns (existing_dump_id, True) without adding to cluster.
+        If new dump created, returns (new_dump_id, False).
         """
+        # Check for duplicate first
+        existing_id = self.check_duplicate(text)
+        if existing_id:
+            return (existing_id, True)
+        
+        # No duplicate, create new dump and assign to cluster
         with self.driver.session() as session:
             result = session.run("""
                 CREATE (d:Dump {
@@ -208,7 +243,7 @@ class BrainDumpDB:
                 RETURN d.id as dump_id
             """, text=text, cluster_id=int(cluster_id))
             dump_id = result.single()["dump_id"]
-            return dump_id
+            return (dump_id, False)
     
     def save_feed_cache(self, dump_id, summary, questions, image_urls=None):
         """
@@ -763,7 +798,9 @@ def run_demo():
     # 2. Add dumps to database
     print("\n[1/4] Adding brain dumps to database...")
     for dump in sample_dumps:
-        db.add_dump(dump)
+        dump_id, is_duplicate = db.add_dump(dump)
+        if is_duplicate:
+            print(f"  Skipped duplicate: {dump[:50]}...")
     
     # 3. Generate embeddings
     print("\n[2/4] Generating embeddings (CPU)...")

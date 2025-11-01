@@ -90,9 +90,12 @@ with st.sidebar:
         if new_dump.strip():
             if not st.session_state.get('adding', False):
                 st.session_state.adding = True
-                st.session_state.db.add_dump(new_dump.strip())
+                dump_id, is_duplicate = st.session_state.db.add_dump(new_dump.strip())
                 st.session_state.input_key += 1
-                st.success("Added! ✨")
+                if is_duplicate:
+                    st.warning("This thought already exists in your sanctuary! 🔄")
+                else:
+                    st.success("Added! ✨")
                 st.rerun()
             else:
                 st.session_state.adding = False
@@ -288,7 +291,7 @@ def render_home():
             ]
             for ex in examples:
                 if st.button(f"Add: {ex}", key=ex):
-                    st.session_state.db.add_dump(ex)
+                    dump_id, is_duplicate = st.session_state.db.add_dump(ex)
                     st.rerun()
     else:
         # Cluster Map Section
@@ -455,15 +458,19 @@ def render_home():
                                         # Check if there was an error
                                         if not generated_text.startswith("Error"):
                                             # Add to database with cluster assignment
-                                            new_dump_id = st.session_state.db.add_generated_dump(generated_text, cluster_id)
+                                            new_dump_id, is_duplicate = st.session_state.db.add_generated_dump(generated_text, cluster_id)
                                             
-                                            # Compute embedding for the generated dump immediately
-                                            # so it doesn't trigger a full recalculation on rerun
-                                            generated_embedding = st.session_state.embedder.embed([generated_text])[0]
-                                            st.session_state.db.update_embedding(new_dump_id, generated_embedding)
-                                            
-                                            generated_dumps.append((new_dump_id, generated_text, cluster_id))
-                                            generated_count += 1
+                                            if not is_duplicate:
+                                                # Compute embedding for the generated dump immediately
+                                                # so it doesn't trigger a full recalculation on rerun
+                                                generated_embedding = st.session_state.embedder.embed([generated_text])[0]
+                                                st.session_state.db.update_embedding(new_dump_id, generated_embedding)
+                                                
+                                                generated_dumps.append((new_dump_id, generated_text, cluster_id))
+                                                generated_count += 1
+                                            else:
+                                                # Duplicate found, skip this generated dump
+                                                pass
                                         else:
                                             failed_clusters.append(cluster_label)
                                     except Exception as e:
